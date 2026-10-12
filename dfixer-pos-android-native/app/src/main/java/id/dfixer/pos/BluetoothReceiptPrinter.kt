@@ -5,6 +5,8 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import java.io.OutputStream
+import java.text.NumberFormat
+import java.util.Locale
 import java.util.UUID
 
 private data class PrinterDevice(
@@ -75,6 +77,11 @@ class BluetoothReceiptPrinter(private val context: Context) {
         } catch (_: SecurityException) {
             null
         }
+    }
+
+    private fun formatCurrency(value: Long): String {
+        val formatter = NumberFormat.getCurrencyInstance(Locale("id", "ID"))
+        return formatter.format(value)
     }
 
     private fun buildReceipt(transaction: TransactionRecord): ByteArray {

@@ -1,9 +1,13 @@
 package id.dfixer.pos
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,6 +47,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -151,6 +156,28 @@ private data class TransactionRecord(
 private fun formatCurrency(value: Long): String {
     val formatter = NumberFormat.getCurrencyInstance(Locale("id", "ID"))
     return formatter.format(value)
+}
+
+private fun getRequiredPrinterPermissions(): Array<String> {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        arrayOf(
+            Manifest.permission.BLUETOOTH_SCAN,
+            Manifest.permission.BLUETOOTH_CONNECT,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+    } else {
+        arrayOf(
+            Manifest.permission.BLUETOOTH,
+            Manifest.permission.BLUETOOTH_ADMIN,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+    }
+}
+
+private fun hasRequiredPrinterPermissions(context: Context): Boolean {
+    return getRequiredPrinterPermissions().all {
+        androidx.core.content.ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+    }
 }
 
 @Composable
@@ -738,6 +765,7 @@ private fun TransactionScreen(
     onBack: () -> Unit,
     onTransactionSaved: () -> Unit
 ) {
+    val context = LocalContext.current
     val cart = remember { mutableStateListOf<CartItem>() }
     var cashText by remember { mutableStateOf("0") }
     var lastSaved by remember { mutableStateOf<String?>(null) }
@@ -758,6 +786,11 @@ private fun TransactionScreen(
     val cash = cashText.toLongOrNull() ?: 0L
     val change = (cash - subtotal).coerceAtLeast(0L)
 
+    val printer = remember { BluetoothReceiptPrinter(context.applicationContext) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ -> }
+
     fun addToCart(product: Product) {
         val index = cart.indexOfFirst { it.product.id == product.id }
         if (index >= 0) {
@@ -775,6 +808,33 @@ private fun TransactionScreen(
                 return
             }
             cart.add(CartItem(product, 1))
+        }
+    }
+
+    fun printLatestReceipt(tx: TransactionRecord) {
+        if (!hasRequiredPrinterPermissions(context)) {
+            permissionLauncher.launch(getRequiredPrinterPermissions())
+            return
+        }
+
+        val paired = printer.pairedDevices()
+        if (paired.isEmpty()) {
+            lastSaved = "Printer Bluetooth belum terpasang"
+            return
+        }
+
+        val selectedPrinter = paired.first()
+        val connected = printer.connect(selectedPrinter.address)
+        if (!connected) {
+            lastSaved = "Gagal menyambung ke printer ${selectedPrinter.name}"
+            return
+        }
+
+        val printed = printer.printReceipt(tx)
+        lastSaved = if (printed) {
+            "Struk tercetak ke ${selectedPrinter.name}"
+        } else {
+            "Gagal mencetak struk"
         }
     }
 
@@ -998,7 +1058,7 @@ private fun TransactionScreen(
                                     )
                                 }
                                 repository.saveTransaction(saleItems, cash)
-                                transactions.add(0, TransactionRecord(
+                                val savedTx = TransactionRecord(
                                     id = (transactions.firstOrNull()?.id ?: 0) + 1,
                                     date = java.time.LocalDate.now().toString(),
                                     time = java.time.LocalTime.now().toString().substring(0, 5),
@@ -1013,10 +1073,12 @@ private fun TransactionScreen(
                                             unitPrice = item.price
                                         )
                                     }
-                                ))
+                                )
+                                transactions.add(0, savedTx)
                                 cart.clear()
                                 cashText = "0"
                                 lastSaved = "Transaksi berhasil disimpan"
+                                printLatestReceipt(savedTx)
                                 onTransactionSaved()
                             } catch (e: IllegalStateException) {
                                 lastSaved = e.message ?: "Transaksi gagal"
@@ -1589,6 +1651,14 @@ private fun PrinterScreen(
     onBack: () -> Unit
 ) {
     val printer = remember { BluetoothReceiptPrinter(context.applicationContext) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grantResults ->
+        val allGranted = grantResults.all { it.value }
+        if (!allGranted) {
+            status = "Izin Bluetooth dibutuhkan untuk mencetak struk"
+        }
+    }
     val pairedDevices = remember { printer.pairedDevices() }
     var selectedAddress by remember { mutableStateOf(pairedDevices.firstOrNull()?.address ?: "") }
     var status by remember { mutableStateOf("Siap mencetak struk ke printer Bluetooth") }
@@ -1596,6 +1666,9 @@ private fun PrinterScreen(
     LaunchedEffect(pairedDevices) {
         if (selectedAddress.isBlank() && pairedDevices.isNotEmpty()) {
             selectedAddress = pairedDevices.first().address
+        }
+        if (!hasRequiredPrinterPermissions(context)) {
+            permissionLauncher.launch(getRequiredPrinterPermissions())
         }
     }
 
